@@ -219,6 +219,7 @@ module spi_top
         if (wb_sel_i[1])
           ctrl[`SPI_CTRL_BIT_NB-1:8] <= #Tp wb_dat_i[`SPI_CTRL_BIT_NB-1:8];
       end
+		// clear GO_BSY bit
     else if(tip && last_bit && pos_edge)
       ctrl[`SPI_CTRL_GO] <= #Tp 1'b0;
   end

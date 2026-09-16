@@ -39,8 +39,9 @@ module EF_PSRAM_CTRL_wb (
     output  wire [3:0]      douten
 );
 
-    localparam  ST_IDLE = 1'b0,
-                ST_WAIT = 1'b1;
+    localparam [1:0]  ST_QPI  = 2'b00,
+											ST_IDLE = 2'b01,
+                			ST_WAIT = 2'b10;
 
     wire        mr_sck;
     wire        mr_ce_n;
@@ -68,16 +69,28 @@ module EF_PSRAM_CTRL_wb (
     wire        wb_re           =   ~we_i & wb_valid;
     //wire[3:0]   wb_byte_sel     =   sel_i & {4{wb_we}};
 
+
     // The FSM
-    reg         state, nstate;
+    reg [3:0] qpi_cnt;
+		reg qpi_ce;
+		reg qpi_sck;
+
+    reg [1:0] state, nstate;
     always @ (posedge clk_i or posedge rst_i)
         if(rst_i)
-            state <= ST_IDLE;
+            state <= ST_QPI;
         else
             state <= nstate;
 
     always @* begin
+				nstate = ST_QPI;
         case(state)
+						ST_QPI  :
+								if (qpi_cnt != 4'd7)
+									  nstate = ST_QPI;
+								else 
+										nstate = ST_IDLE;
+
             ST_IDLE :
                 if(wb_valid)
                     nstate = ST_WAIT;
@@ -89,9 +102,38 @@ module EF_PSRAM_CTRL_wb (
                     nstate = ST_IDLE;
                 else
                     nstate = ST_WAIT;
+						default:;
         endcase
     end
+		
 
+		wire [7:0] CMD_35H = 8'h35;
+		wire [3:0] qpi_out;
+		assign qpi_out = (qpi_cnt < 4'd8) ? {3'b0, CMD_35H[7 - qpi_cnt]} : 4'b0;
+
+	  always @(posedge clk_i or posedge rst_i)
+			if (rst_i)
+				qpi_ce <= 1'b1;
+			else if (state == ST_QPI)
+				qpi_ce <= 1'b0;
+			else 
+				qpi_ce <= 1'b1;
+
+		always @(posedge clk_i or posedge rst_i)
+			if (rst_i)
+				qpi_sck <= 1'b0;
+			else if (~qpi_ce)
+				qpi_sck <= ~qpi_sck;
+			else 
+				qpi_sck <= 1'b0;
+				
+		always @(posedge clk_i or posedge rst_i)
+				if (rst_i) 
+					qpi_cnt <= 4'd0;
+				else if (qpi_sck) 
+					qpi_cnt <= qpi_cnt + 1;
+
+		/* 并没有考虑非对齐访问，也即没有 sel_i == 4'b0110 */
     wire [2:0]  size =  (sel_i == 4'b0001) ? 1 :
                         (sel_i == 4'b0010) ? 1 :
                         (sel_i == 4'b0100) ? 1 :
@@ -100,8 +142,9 @@ module EF_PSRAM_CTRL_wb (
                         (sel_i == 4'b1100) ? 2 :
                         (sel_i == 4'b1111) ? 4 : 4;
 
-
-
+		/* 下面的 byte0 --- byte3 实际上是要发送的字节的顺序 
+    ** 只发送了要写入的字节
+      * */
     wire [7:0]  byte0 = (sel_i[0])          ? dat_i[7:0]   :
                         (sel_i[1] & size==1)? dat_i[15:8]  :
                         (sel_i[2] & size==1)? dat_i[23:16] :
@@ -126,6 +169,20 @@ module EF_PSRAM_CTRL_wb (
                         (size==2 && sel_i[2]==1) ? 2'b10 :
                         2'b00;
                       */
+		
+		/* revised chuan */
+    /*
+		wire [1:0] waddr = ({2{sel_i == 4'b0001}} & 2'b00)
+										 | ({2{sel_i == 4'b0010}} & 2'b01)
+										 | ({2{sel_i == 4'b0100}} & 2'b10)
+										 | ({2{sel_i == 4'b1000}} & 2'b11)
+										 | ({2{sel_i == 4'b0011}} & 2'b00)
+										 | ({2{sel_i == 4'b1100}} & 2'b10)
+										 | ({2{sel_i == 4'b1111}} & 2'b00);
+
+		wire [23:0] adr_revised;
+		assign adr_revised = {adr_i[23:2], waddr};
+    */
 
     assign mr_rd    = ( (state==ST_IDLE ) & wb_re );
     assign mw_wr    = ( (state==ST_IDLE ) & wb_we );
@@ -150,6 +207,8 @@ module EF_PSRAM_CTRL_wb (
         .clk(clk_i),
         .rst_n(~rst_i),
         .addr({adr_i[23:0]}),
+        //.addr(adr_revised),
+
         .wr(mw_wr),
         .size(size),
         .done(mw_done),
@@ -161,12 +220,21 @@ module EF_PSRAM_CTRL_wb (
         .douten(mw_doe)
     );
 
-    assign sck  = wb_we ? mw_sck  : mr_sck;
-    assign ce_n = wb_we ? mw_ce_n : mr_ce_n;
-    assign dout = wb_we ? mw_dout : mr_dout;
-    assign douten  = wb_we ? {4{mw_doe}}  : {4{mr_doe}};
+    assign sck  = (qpi_cnt != 4'd8) ? qpi_sck :
+									wb_we ? mw_sck : mr_sck;
+
+    assign ce_n = (qpi_cnt != 4'd8) ? qpi_ce : 
+									wb_we ? mw_ce_n : mr_ce_n;
+
+    assign dout = (qpi_cnt != 4'd8) ? qpi_out :
+									wb_we ? mw_dout : mr_dout;
+
+    assign douten = (qpi_cnt != 4'd8) ? 4'b1111 :
+									wb_we ? {4{mw_doe}}  : {4{mr_doe}};
 
     assign mw_din = din;
     assign mr_din = din;
-    assign ack_o = wb_we ? mw_done :mr_done ;
+
+    //assign ack_o = (qpi_cnt != 4'd8) ? 1'b1 : 
+		assign ack_o =							wb_we ? mw_done :mr_done ;
 endmodule
