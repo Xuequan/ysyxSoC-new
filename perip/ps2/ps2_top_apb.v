@@ -16,7 +16,6 @@ module ps2_top_apb(
   input         ps2_data
 );
 
-reg ready_r;
 //reg overflow_r;
 reg [9:0] buffer;
 reg [7:0] fifo[7:0];
@@ -35,39 +34,36 @@ always @(posedge clock) begin
   if (reset) begin
     count <= 0;
     w_ptr <= 0;
-    r_prt <= 0;
-    //overflow_r <= 0;
-    ready_r <= 0;
   end
-  else begin
-    if (ready_r) begin
-      r_prt <= r_prt + 3'b1;
-      if (w_ptr == (r_prt + 1'b1) )  // enpty
-        ready_r <= 1'b0;
-    end 
-
-    if (sampling) begin
+  else if (sampling) begin
       if (count == 4'd10) begin
         count <= 0;   // 重置
-        if ( (buffer[0] == 0) && (ps2_data) && (^buffer[9:1]) ) begin
-          
-          $display("receive %x", buffer[8:1]);
-
+        // 起始位为0，停止位为1，奇校验正确
+        if ( (buffer[0] == 0) && (ps2_data == 1'b1) && (^buffer[9:1]) ) begin
           fifo[w_ptr] <= buffer[8:1];
           w_ptr <= w_ptr + 3'b1;
-          ready_r <= 1'b1;
-          //overflow_r <= overflow_r | (r_prt == (w_ptr + 3'b1));
         end 
-      end 
-    end else begin
-      buffer[count] <= ps2_data;
-      count <= count + 3'b1;
-    end 
+      end else begin
+        buffer[count] <= ps2_data;
+        count <= count + 3'b1;
+      end  // end if (count ...)
   end // end if(sampling)
 end
 
-assign in_prdata = {24'b0, fifo[r_prt]};
-assign in_pready = ready_r;
+wire fifo_empty = (w_ptr == r_prt);
+wire apb_read = in_psel && in_penable && !in_pwrite;
+
+always @(posedge clock) begin
+  if (reset) begin
+    r_prt <= 0;
+  end else if (apb_read && !fifo_empty) begin
+    r_prt <= r_prt + 3'b1;
+  end
+end
+
+// FIFO 有数据时返回数据，无数据时返回 0
+assign in_prdata = fifo_empty ? 32'b0 : {24'b0, fifo[r_prt]};
+assign in_pready = 1'b1;
 assign in_pslverr = 0;
 
 endmodule
