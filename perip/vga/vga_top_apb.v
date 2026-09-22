@@ -33,23 +33,23 @@ wire      v_valid;
 always @(posedge pclk) 
   if (reset == 1'b1)
     x_cnt <= 1;
-  else
-  begin
-    if (x_cnt == h_total)
+  else 
+    begin if (x_cnt == h_total)
       x_cnt <= 1;
     else 
       x_cnt <= x_cnt + 10'd1;
   end 
 
-always @(posedge pclk) 
-  if (reset == 1'b1)
+always @(posedge pclk) begin
+  if (reset == 1'b1) begin
     y_cnt <= 1;
-  else begin
-    if (y_cnt == v_total && x_cnt == h_total)
+  end else if (x_cnt == h_total) begin
+    if (y_cnt == v_total)
       y_cnt <= 1;
-    else if (x_cnt == h_total)
+    else 
       y_cnt <= y_cnt + 10'd1;
   end
+end
 // 生成同步信号
 assign hsync = (x_cnt > h_frontporch);
 assign vsync = (y_cnt > v_frontporch);
@@ -64,9 +64,9 @@ assign h_addr = h_valid ? (x_cnt - 10'd145) : {10{1'b0}};
 assign v_addr = v_valid ? (y_cnt - 10'd36)  : {10{1'b0}};
 
 // 设置输出的颜色值
-assign vga_r = vga_data[23:16];
-assign vga_g = vga_data[15:8];
-assign vga_b = vga_data[7:0];
+assign vga_r = valid ? vga_data[23:16] : 8'h0;
+assign vga_g = valid ? vga_data[15:8] : 8'h0;
+assign vga_b = valid ? vga_data[7:0] : 8'h0;
 
 endmodule
 
@@ -92,28 +92,31 @@ module vga_top_apb(
   output        vga_valid
 );
 
-reg [23:0] vga_buffer [32'h4B000];
-reg ready;
 
-wire [9:0] h_addr;
-wire [9:0] v_addr;
+// 640*480 = 307200 个像素点
+reg [23:0] vga_buffer [0:307199];
 
-assign in_pready = ready;
+wire [18:0] wire_index = in_paddr[20:2];
 
 always @(posedge clock) begin
-  if (reset) begin
-    ready <= 0;
+  if (in_pwrite && in_penable && in_psel) begin
+    if (wire_index < 307200) begin
+      vga_buffer[wire_index] <= in_pwdata[23:0];
+    end
   end
-  else if (in_pwrite && in_penable && in_psel) begin
-    vga_buffer[{10'b0, in_paddr[23:2]}] <= in_pwdata[23:0];
-    ready <= 1;
-  end
-  else
-    ready <= 0;
 end
 
+// APB 组合逻辑单周期相应，防止总线死锁
+assign in_pready = 1'b1;
+assign in_prdata = 32'b0;
+assign in_pslverr = 1'b0;
+
+
+// VGA 屏幕扫描读取
+wire [9:0] h_addr;
+wire [9:0] v_addr;
 wire [31:0] pixel_index = ( {22'b0, v_addr} << 9 ) + ({22'b0, v_addr} << 7) + {22'b0, h_addr};
-wire [23:0] vga_data = vga_buffer[pixel_index];
+wire [23:0] vga_data    = vga_buffer[pixel_index];
 
 vga_ctrl #(
   .h_frontporch (96),
